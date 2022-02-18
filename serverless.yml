@@ -1,0 +1,95 @@
+service: auto-ip-waf
+
+frameworkVersion: '3'
+
+provider:
+  name: aws
+  runtime: go1.x
+  region: ap-northeast-1
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action:
+            - waf-regional:GetIPSet
+            - waf-regional:UpdateIPSet
+          Resource:
+            - !Sub arn:aws:waf-regional:${AWS::Region}:${AWS::AccountId}:ipset/${WhitelistPrevious}
+            - !Sub arn:aws:waf-regional:${AWS::Region}:${AWS::AccountId}:ipset/${WhitelistCurrent}
+        - Effect: Allow
+          Action:
+            - waf-regional:GetChangeToken
+          Resource:
+            - !Sub arn:aws:waf-regional:${AWS::Region}:${AWS::AccountId}:changetoken/*
+
+package:
+  patterns:
+    - '!./**'
+    - ./bin/**
+
+functions:
+  api:
+    handler: bin/api
+    events:
+      - http:
+          path: /api
+          method: get
+  iprefresher:
+    handler: bin/iprefresher
+    events:
+      - schedule:
+          rate: cron(0 0 * * ? *) # once a day at midnight
+    environment:
+      IPSET_PREVIOUS_ID:
+        Ref: WhitelistPrevious
+      IPSET_CURRENT_ID:
+        Ref: WhitelistCurrent
+
+resources:
+  Resources:
+
+    WebACLAssociation:
+      Type: AWS::WAFRegional::WebACLAssociation
+      Properties:
+        ResourceArn: !Sub arn:aws:apigateway:${AWS::Region}::/restapis/${ApiGatewayRestApi}/stages/dev
+        WebACLId:
+          Ref: WebACL
+
+    WebACL:
+      Type: AWS::WAFRegional::WebACL
+      Properties:
+        DefaultAction:
+          Type: BLOCK
+        MetricName: APIWebACL
+        Name: API-Web-ACL
+        Rules:
+          - Action:
+              Type: ALLOW
+            Priority: 1
+            RuleId:
+              Ref: WhitelistRule
+
+    WhitelistRule:
+      Type: AWS::WAFRegional::Rule
+      Properties:
+        Name: WhitelistIPSetRule
+        MetricName: WhitelistIPSetRule
+        Predicates:
+          - DataId:
+              Ref: WhitelistPrevious
+            Negated: false
+            Type: IPMatch
+          - DataId:
+              Ref: WhitelistCurrent
+            Negated: false
+            Type: IPMatch
+
+    WhitelistPrevious:
+      Type: AWS::WAFRegional::IPSet
+      Properties:
+        Name: IP addresses added last time
+
+    WhitelistCurrent:
+      Type: AWS::WAFRegional::IPSet
+      Properties:
+        Name: Most recent IP addresses
